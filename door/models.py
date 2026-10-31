@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -61,7 +62,6 @@ class Order(models.Model):
         WAITING_SERVICE = "waiting_service", "Ожидает услугу"
         COMPLETED = "completed", "Завершен"
 
-    # null (а не ""), чтобы unique не конфликтовал до выдачи номера
     number = models.CharField(
         "Номер заявки", max_length=20, unique=True, null=True, blank=True, editable=False
     )
@@ -106,11 +106,9 @@ class Order(models.Model):
     comment = models.TextField("Комментарий магазина", blank=True)
     created_at = models.DateTimeField("Дата заявки", auto_now_add=True)
 
-    # «Дата выполнения: 15.01.2026 - 22.01.2026» — диапазон из календаря при создании
     desired_date_from = models.DateField("Дата выполнения (с)", null=True, blank=True)
     desired_date_to = models.DateField("Дата выполнения (по)", null=True, blank=True)
 
-    # «Дата назначения работ» — ставит сервис
     scheduled_date = models.DateField("Дата назначения работ", null=True, blank=True)
 
     class Meta:
@@ -132,8 +130,40 @@ class Order(models.Model):
             "phone": profile.phone if profile else "",
         }
 
+    def clean(self):
+        """Валидация дат: диапазон «с … по» и попадание scheduled_date в него."""
+        super().clean()
+
+        errors = {}
+
+        if self.desired_date_from and self.desired_date_to:
+            if self.desired_date_to < self.desired_date_from:
+                errors["desired_date_to"] = (
+                    "Дата «по» не может быть раньше даты «с»."
+                )
+
+        if self.scheduled_date and self.desired_date_from:
+            if self.scheduled_date < self.desired_date_from:
+                errors["scheduled_date"] = (
+                    "Дата назначения работ не может быть раньше даты «с»."
+                )
+
+        if self.scheduled_date and self.desired_date_to:
+            if self.scheduled_date > self.desired_date_to:
+                errors["scheduled_date"] = (
+                    "Дата назначения работ не может быть позже даты «по»."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
     def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None:
+            self.full_clean()
+
         super().save(*args, **kwargs)
+
         if not self.number:
             self.number = self.format_number(self.pk)
             # update(), чтобы не вызывать сигналы повторно
